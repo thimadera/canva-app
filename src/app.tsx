@@ -1,55 +1,10 @@
-import { useState } from "react";
+/* eslint-disable formatjs/no-literal-string-in-jsx */
+/* eslint-disable react/prop-types */
+import { useCallback, useMemo, useState } from "react";
 import { Button, Rows, Text, LoadingIndicator } from "@canva/app-ui-kit";
 import { requestExport, getDesignToken } from "@canva/design";
 import { auth } from "@canva/user";
-import { defineMessages, useIntl } from "react-intl";
 import { requestOpenExternalUrl } from "@canva/platform";
-
-// Mensagens sem id manual (formatjs/no-id ok) e com description (enforce-description ok)
-const messages = defineMessages({
-  exportButton: {
-    defaultMessage: "Exportar e enviar",
-    description:
-      "Botão que exporta a arte atual do Canva e envia para a API da Brasa",
-  },
-  exporting: {
-    defaultMessage: "Exportando e salvando…",
-    description: "Texto exibido enquanto está processando",
-  },
-  successTitle: {
-    defaultMessage: "Prontinho! Sua arte foi enviada",
-    description: "Título de sucesso após upload",
-  },
-  successBody: {
-    defaultMessage:
-      "Salvo com sucesso! Você já pode abrir o mockup para conferir.",
-    description: "Descrição após sucesso",
-  },
-  openMockup: {
-    defaultMessage: "Abrir mockup em nova aba",
-    description: "Rótulo do botão que abre o mockup",
-  },
-  tryAgain: {
-    defaultMessage: "Tentar novamente",
-    description: "Botão de tentar novamente após erro",
-  },
-  errorTitle: {
-    defaultMessage: "Ops! Algo deu errado",
-    description: "Título exibido no estado de erro",
-  },
-  exportTitle: {
-    defaultMessage: "Brasa • Export & Mockup",
-    description: "Título da página",
-  },
-  clear: {
-    defaultMessage: "Limpar",
-    description: "Botão de limpar",
-  },
-  empty: {
-    defaultMessage: "—",
-    description: "Vazio",
-  },
-});
 
 const API_BASE = "https://admin.levebrasa.com";
 
@@ -62,39 +17,129 @@ type ExportResponse = {
   size?: number;
   contentTypeOut?: string;
   timings?: { totalMs?: number };
+  error?: string;
 };
 
 export function App() {
-  const intl = useIntl();
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [resultInfo, setResultInfo] = useState<ExportResponse | null>(null);
   const [title, setTitle] = useState<string>("");
 
-  // Parâmetros fixos pro mockup
+  // Fixos conforme pedido
   const modelo = "2 Canecas Padrão";
   const cor = "Branca";
 
-  const mockupUrl = (titleParam?: string) => {
+  // -------------- helpers --------------
+  const formatBytes = (value?: number) => {
+    if (typeof value !== "number" || !isFinite(value)) return "—";
+    const units = ["B", "KB", "MB", "GB"];
+    let v = value;
+    let i = 0;
+    while (v >= 1024 && i < units.length - 1) {
+      v /= 1024;
+      i++;
+    }
+    return `${v.toFixed(v >= 100 ? 0 : v >= 10 ? 1 : 2)} ${units[i]}`;
+  };
+
+  const formatMs = (ms?: number) => {
+    if (typeof ms !== "number" || !isFinite(ms)) return "—";
+    if (ms < 1000) return `${Math.round(ms)} ms`;
+    const s = ms / 1000;
+    return `${s.toFixed(s >= 10 ? 1 : 2)} s`;
+  };
+
+  // -------------- styles --------------
+  const SP = 12; // spacing unit
+  const appStyle: React.CSSProperties = {
+    padding: 16,
+    display: "flex",
+    flexDirection: "column",
+    gap: SP,
+  };
+
+  const headerStyle: React.CSSProperties = {
+    display: "flex",
+    flexDirection: "column",
+    gap: 4,
+  };
+
+  const gridStyle: React.CSSProperties = {
+    display: "grid",
+    gridTemplateColumns: "minmax(120px, 180px) 1fr",
+    rowGap: 6,
+    columnGap: 10,
+    alignItems: "start",
+  };
+
+  // -------------- small UI components --------------
+  const DetailRow: React.FC<{
+    label: string;
+    value?: React.ReactNode;
+    code?: boolean;
+  }> = ({ label, value, code }) => (
+    <>
+      <Text variant="bold">{label}</Text>
+
+      {code ? (
+        <div
+          style={{
+            fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+          }}
+        >
+          <Text>{value ?? "—"}</Text>
+        </div>
+      ) : (
+        <Text>{value ?? "—"}</Text>
+      )}
+    </>
+  );
+
+  const StateBlock: React.FC<{ text: string }> = ({ text }) => (
+    <div
+      role="status"
+      aria-live="polite"
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+        alignItems: "flex-start",
+      }}
+    >
+      <LoadingIndicator />
+      <Text>{text}</Text>
+    </div>
+  );
+
+  // -------------- computed --------------
+  // helper pra montar a URL com qualquer título
+  const buildMockupUrl = (artTitle?: string) => {
+    const finalTitle = (artTitle && artTitle.trim()) || title || "arte";
     return (
       "https://admin.levebrasa.com/internal/mockup" +
       `?modelo=${encodeURIComponent(modelo)}` +
-      `&arte=${encodeURIComponent(titleParam || title || "arte")}` +
+      `&arte=${encodeURIComponent(finalTitle)}` +
       `&cor=${encodeURIComponent(cor)}`
     );
   };
 
-  async function handleExportAndSend() {
+  // mantém seu memo para o botão manual (usa o state `title`)
+  const mockupUrl = useMemo(() => buildMockupUrl(), [title, modelo, cor]);
+
+  const openMockup = useCallback(async () => {
+    await requestOpenExternalUrl({ url: mockupUrl });
+  }, [mockupUrl]);
+
+  // -------------- actions --------------
+  const handleExportAndSend = useCallback(async () => {
     setErrorMessage(null);
     setResultInfo(null);
     setLoading(true);
 
-    const t0 = Date.now();
     try {
-      // 1) Abre export dialog
-      const result = await requestExport({
-        acceptedFileTypes: ["png"], // adicione "jpg"/"pdf_standard" se quiser
-      });
+      // 1) Export dialog (Canva)
+      const result = await requestExport({ acceptedFileTypes: ["png"] });
 
       // usuário pode cancelar
       if (result.status !== "completed") {
@@ -102,7 +147,7 @@ export function App() {
         return;
       }
 
-      setTitle(result.title || "arte"); // Canva já envia sem extensão
+      setTitle(result.title || "arte");
 
       const userToken = await auth.getCanvaUserToken();
       const designToken = await getDesignToken();
@@ -124,149 +169,103 @@ export function App() {
       const json: ExportResponse = await resp.json();
       setResultInfo(json);
 
-      // Logs estruturados (Vercel-friendly)
-      // eslint-disable-next-line no-console
-      console.info(
-        JSON.stringify({
-          level: "info",
-          msg: "canva-export-finished",
-          ok: json?.ok,
-          status: resp.status,
-          requestId: json?.requestId,
-          timings: json?.timings,
-          path: json?.path,
-          bucket: json?.bucket,
-          elapsedMs: Date.now() - t0,
-        }),
-      );
-
-      // 3) Se deu tudo certo, tenta abrir o mockup
       if (resp.ok && json?.ok) {
+        // 3) Abre o mockup oficialmente (sem window.open)
         try {
-          requestOpenExternalUrl({ url: mockupUrl(result.title) });
+          await requestOpenExternalUrl({ url: buildMockupUrl(result.title) });
         } catch {
-          // se o popup for bloqueado, o botão de fallback aparece na UI
+          // fallback: botão visível na UI
         }
       } else {
-        setErrorMessage(
-          (json as unknown as { error: string })?.error ||
-            "Falha ao enviar a arte.",
-        );
+        setErrorMessage(json?.error || "Falha ao enviar a arte.");
       }
-    } catch (errorP: unknown) {
-      const error = errorP as Error;
-
-      setErrorMessage(error?.message || "Erro inesperado.");
-      // eslint-disable-next-line no-console
-      console.error(
-        JSON.stringify({
-          level: "error",
-          msg: "canva-export-error",
-          error: error?.message || String(error),
-        }),
-      );
+    } catch (e: unknown) {
+      const err = e as Error;
+      setErrorMessage(err?.message || "Erro inesperado.");
     } finally {
       setLoading(false);
     }
-  }
+  }, [mockupUrl]);
 
-  function reset() {
+  const reset = useCallback(() => {
     setErrorMessage(null);
     setResultInfo(null);
     setTitle("");
-  }
+  }, []);
 
+  // -------------- render --------------
   return (
-    <div
-      style={{
-        padding: 16,
-        display: "flex",
-        flexDirection: "column",
-        gap: 12,
-      }}
-    >
+    <div style={appStyle}>
       {/* Header */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <div style={headerStyle}>
         <Text size="large" variant="bold">
-          {intl.formatMessage(messages.exportTitle)}
+          Brasa • Export & Mockup
+        </Text>
+        <Text>
+          Otimizamos sua arte (largura máx. 1000 px) e salvamos com segurança.
+          Em seguida, abrimos o mockup pra você conferir.
         </Text>
       </div>
 
-      {/* Conteúdo por estado */}
+      {/* Estados */}
       {loading ? (
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: 8,
-            alignItems: "flex-start",
-          }}
-        >
-          <LoadingIndicator />
-          <Text>{intl.formatMessage(messages.exporting)}</Text>
-        </div>
+        <StateBlock text="Exportando e salvando…" />
       ) : errorMessage ? (
-        <div
-          style={{
-            border: "1px solid rgba(255,0,0,0.2)",
-            background: "rgba(255,0,0,0.06)",
-            borderRadius: 8,
-            padding: 12,
-            display: "flex",
-            flexDirection: "column",
-            gap: 8,
-          }}
-        >
-          <Text variant="bold">{intl.formatMessage(messages.errorTitle)}</Text>
+        <>
+          <Text variant="bold">Ops! Algo deu errado</Text>
           <Text>{errorMessage}</Text>
           <div style={{ display: "flex", gap: 8 }}>
             <Button variant="primary" onClick={handleExportAndSend}>
-              {intl.formatMessage(messages.tryAgain)}
+              Tentar novamente
             </Button>
             <Button variant="secondary" onClick={reset}>
-              {intl.formatMessage(messages.clear)}
+              Limpar
             </Button>
           </div>
-        </div>
+        </>
       ) : resultInfo?.ok ? (
-        <div
-          style={{
-            border: "1px solid rgba(0,0,0,0.08)",
-            background: "rgba(0,0,0,0.03)",
-            borderRadius: 8,
-            padding: 12,
-            display: "flex",
-            flexDirection: "column",
-            gap: 10,
-          }}
-        >
+        <>
           <Text size="large" variant="bold">
-            {intl.formatMessage(messages.successTitle)}
+            Prontinho! Sua arte foi enviada
           </Text>
-          <Text>{intl.formatMessage(messages.successBody)}</Text>
+          <Text>
+            Link temporário gerado e arquivo salvo no Storage. Você pode abrir o
+            mockup agora.
+          </Text>
+          <div style={{ marginTop: 2 }}>
+            <Text variant="bold">Detalhes do envio</Text>
+          </div>
+
+          <div style={gridStyle}>
+            <DetailRow label="Arte:" value={title} />
+            <DetailRow label="Tamanho:" value={formatBytes(resultInfo.size)} />
+            <DetailRow
+              label="Formato (saída):"
+              value={resultInfo.contentTypeOut}
+            />
+            <DetailRow
+              label="Tempo total:"
+              value={formatMs(resultInfo?.timings?.totalMs)}
+            />
+          </div>
 
           <div style={{ display: "flex", gap: 8 }}>
-            <Button
-              variant="primary"
-              onClick={() => {
-                try {
-                  requestOpenExternalUrl({ url: mockupUrl() });
-                } catch {
-                  // Do nothing
-                }
-              }}
-            >
-              {intl.formatMessage(messages.openMockup)}
+            <Button variant="primary" onClick={openMockup}>
+              Abrir mockup
             </Button>
             <Button variant="secondary" onClick={reset}>
-              {intl.formatMessage(messages.tryAgain)}
+              Tentar novamente
             </Button>
           </div>
-        </div>
+        </>
       ) : (
         <Rows spacing="2u">
-          <Button variant="primary" onClick={handleExportAndSend}>
-            {intl.formatMessage(messages.exportButton)}
+          <Button
+            variant="primary"
+            onClick={handleExportAndSend}
+            disabled={loading}
+          >
+            Exportar e enviar
           </Button>
         </Rows>
       )}
